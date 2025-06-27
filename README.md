@@ -1,8 +1,6 @@
 # Pocket to Obsidian
 
-Convert your Pocket bookmarks to Obsidian markdown files using the same technology as Obsidian Web Clipper.
-
-**Note:** Since Pocket is being retired, this tool helps you migrate your saved articles to Obsidian.
+Convert your Pocket bookmarks to Obsidian markdown files using the same technology as Obsidian Web Clipper. Since Pocket is being retired, this tool helps you migrate your saved articles to Obsidian.
 
 ---
 
