@@ -1,0 +1,19 @@
+# Pocket to Obsidian Configuration Example
+# Copy this file and update the values for your setup
+
+# Path to your Obsidian vault (required)
+# Set this environment variable or use --vault option
+export OBSIDIAN_VAULT_PATH="/path/to/your/obsidian/vault"
+
+# Browser settings (optional)
+export PUPPETEER_HEADLESS="true"
+
+# Example usage:
+# 1. Set your vault path:
+#    export OBSIDIAN_VAULT_PATH="/Users/username/Documents/ObsidianVault"
+#
+# 2. Run the converter:
+#    npm start -- --csv "pocket-export.csv"
+#
+# 3. Or specify vault path directly:
+#    npm start -- --vault "/path/to/vault" --csv "pocket-export.csv" 
