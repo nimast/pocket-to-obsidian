@@ -4,7 +4,14 @@ import { Command } from 'commander';
 import { parsePocketCSV } from './core/csv-parser';
 import { ContentExtractor } from './core/content-extractor';
 import { generateMarkdown } from './core/markdown-generator';
-import { writeMarkdownToVault, createOutputFolder, writeResultsToCSV, ConversionResult } from './core/file-manager';
+import { 
+  writeMarkdownToVault, 
+  createOutputFolder, 
+  writeResultsToCSV, 
+  ConversionResult,
+  findLatestRunFolder,
+  readPreviousResults
+} from './core/file-manager';
 import { PocketItem } from './types';
 import path from 'path';
 import chalk from 'chalk';
@@ -20,6 +27,7 @@ program
   .option('-l, --limit <number>', 'Limit number of items to process', parseInt)
   .option('-o, --output <path>', 'Custom output directory')
   .option('--headless <boolean>', 'Run browser in headless mode', 'true')
+  .option('-r, --resume [folder]', 'Resume from previous run, optionally specify folder path')
   .parse();
 
 const options = program.opts();
@@ -47,6 +55,9 @@ async function main() {
   if (options.limit) {
     console.log(chalk.white(`Limit: ${options.limit} items`));
   }
+  if (options.resume) {
+    console.log(chalk.yellow('Resume mode: enabled'));
+  }
   console.log('');
 
   try {
@@ -54,8 +65,53 @@ async function main() {
     const items: PocketItem[] = await parsePocketCSV(csvPath);
     console.log(chalk.green(`✓ Found ${items.length} items in CSV.`));
 
+    let itemsToProcess: PocketItem[] = items;
+    let previousResults: ConversionResult[] = [];
+
+    if (options.resume) {
+      // Find the resume folder - either specified or latest
+      let resumeFolder: string | null = null;
+      
+      if (typeof options.resume === 'string' && options.resume !== 'true') {
+        // Specific folder provided
+        resumeFolder = path.resolve(options.resume);
+        console.log(chalk.yellow(`Resuming from specified folder: ${resumeFolder}`));
+      } else {
+        // Use latest folder
+        resumeFolder = findLatestRunFolder();
+        if (resumeFolder) {
+          console.log(chalk.yellow(`Resuming from latest run: ${resumeFolder}`));
+        }
+      }
+
+      if (resumeFolder) {
+        const { successful, failed } = readPreviousResults(resumeFolder);
+        
+        // Skip items that were successfully processed
+        const skippedCount = successful.size;
+        console.log(chalk.gray(`Skipping ${skippedCount} previously successful conversions`));
+        
+        // Only process failed items and new items
+        itemsToProcess = items.filter(item => !successful.has(item.url));
+        
+        // Add previously failed items to results (so they get retried)
+        previousResults = failed.map(item => ({
+          item,
+          success: false,
+          error: 'Retrying from previous run'
+        }));
+        
+        console.log(chalk.yellow(`Will retry ${failed.length} failed conversions`));
+        console.log(chalk.white(`Will process ${itemsToProcess.length - failed.length} new items`));
+      } else {
+        console.log(chalk.gray('No previous run found, processing all items'));
+      }
+    }
+
     // Apply limit if specified
-    const itemsToProcess = options.limit ? items.slice(0, options.limit) : items;
+    if (options.limit) {
+      itemsToProcess = itemsToProcess.slice(0, options.limit);
+    }
     console.log(chalk.white(`Processing ${itemsToProcess.length} items...`));
 
     // Create timestamped output folder
@@ -65,7 +121,7 @@ async function main() {
     const extractor = new ContentExtractor({
       headless: options.headless === 'true'
     });
-    const results: ConversionResult[] = [];
+    const results: ConversionResult[] = [...previousResults];
     
     try {
       for (let i = 0; i < itemsToProcess.length; i++) {
@@ -73,7 +129,14 @@ async function main() {
         if (!item.url) continue;
         
         const progress = `[${i + 1}/${itemsToProcess.length}]`;
-        console.log(chalk.blue(`${progress} Clipping: ${item.title}`));
+        
+        // Check if this is a retry from previous run
+        const isRetry = results.some(r => r.item.url === item.url);
+        if (isRetry) {
+          console.log(chalk.blue(`${progress} Retrying: ${item.title}`));
+        } else {
+          console.log(chalk.blue(`${progress} Clipping: ${item.title}`));
+        }
         console.log(chalk.gray(`   URL: ${item.url}`));
         
         try {
@@ -81,20 +144,41 @@ async function main() {
           const markdown = generateMarkdown(item, content);
           const outputPath = writeMarkdownToVault(vaultPath, item, markdown);
           
-          results.push({
-            item,
-            success: true,
-            outputPath
-          });
+          // Update existing result or add new one
+          const existingIndex = results.findIndex(r => r.item.url === item.url);
+          if (existingIndex >= 0) {
+            results[existingIndex] = {
+              item,
+              success: true,
+              outputPath
+            };
+          } else {
+            results.push({
+              item,
+              success: true,
+              outputPath
+            });
+          }
           
           console.log(chalk.green(`   ✓ Success: ${path.basename(outputPath)}`));
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : String(err);
-          results.push({
-            item,
-            success: false,
-            error: errorMessage
-          });
+          
+          // Update existing result or add new one
+          const existingIndex = results.findIndex(r => r.item.url === item.url);
+          if (existingIndex >= 0) {
+            results[existingIndex] = {
+              item,
+              success: false,
+              error: errorMessage
+            };
+          } else {
+            results.push({
+              item,
+              success: false,
+              error: errorMessage
+            });
+          }
           
           console.log(chalk.red(`   ✗ Failed: ${errorMessage}`));
         }
@@ -118,6 +202,10 @@ async function main() {
         results.filter(r => !r.success).forEach(r => {
           console.log(chalk.yellow(`  - ${r.item.title}: ${r.error}`));
         });
+        
+        if (options.resume) {
+          console.log(chalk.blue(`\n💡 Tip: Run again with --resume to retry the ${failed} failed conversions`));
+        }
       }
       
     } finally {

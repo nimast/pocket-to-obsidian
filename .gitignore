@@ -165,6 +165,5 @@ jspm_packages/
 outputs/
 annotations/
 *.csv
-*.json
 .DS_Store
 Thumbs.db 

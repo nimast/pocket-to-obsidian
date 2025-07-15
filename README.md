@@ -16,6 +16,7 @@ Convert your Pocket bookmarks to Obsidian markdown files using the same technolo
 - 📊 Batch process hundreds of bookmarks
 - 📈 Progress tracking
 - 🔒 Safe content handling
+- 🔄 Resume failed conversions
 
 ## Quick Start
 
@@ -50,6 +51,24 @@ Convert your Pocket bookmarks to Obsidian markdown files using the same technolo
 | `--csv <file>` | Pocket CSV file | `part_000000.csv` |
 | `--limit <number>` | Limit items to process | All items |
 | `--output <path>` | Custom output dir | `outputs/run-{timestamp}` |
+| `--resume [folder]` | Resume from previous run | false |
+
+## Resume Failed Conversions
+
+If some conversions fail, you can resume and retry only the failed ones:
+
+```bash
+# Resume from the latest run
+npm start -- --resume
+
+# Resume from a specific run folder
+npm start -- --resume outputs/run-2024-01-15T10-30-00
+```
+
+This will:
+- Skip previously successful conversions
+- Retry failed conversions
+- Process any new items
 
 ## Output
 

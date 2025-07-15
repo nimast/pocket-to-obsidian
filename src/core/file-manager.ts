@@ -17,6 +17,64 @@ export function createOutputFolder(): string {
   return outputDir;
 }
 
+export function findLatestRunFolder(): string | null {
+  const outputsDir = path.join(process.cwd(), 'outputs');
+  if (!fs.existsSync(outputsDir)) {
+    return null;
+  }
+  
+  const runFolders = fs.readdirSync(outputsDir)
+    .filter(name => name.startsWith('run-'))
+    .sort()
+    .reverse();
+  
+  return runFolders.length > 0 ? path.join(outputsDir, runFolders[0]) : null;
+}
+
+export function readPreviousResults(runFolder: string): {
+  successful: Set<string>;
+  failed: PocketItem[];
+} {
+  const successful = new Set<string>();
+  const failed: PocketItem[] = [];
+  
+  // Read successful conversions
+  const successfulPath = path.join(runFolder, 'successful.csv');
+  if (fs.existsSync(successfulPath)) {
+    const content = fs.readFileSync(successfulPath, 'utf8');
+    const lines = content.split('\n').slice(1); // Skip header
+    lines.forEach(line => {
+      if (line.trim()) {
+        const url = line.split(',')[1]?.replace(/"/g, '');
+        if (url) successful.add(url);
+      }
+    });
+  }
+  
+  // Read failed conversions
+  const failedPath = path.join(runFolder, 'failed.csv');
+  if (fs.existsSync(failedPath)) {
+    const content = fs.readFileSync(failedPath, 'utf8');
+    const lines = content.split('\n').slice(1); // Skip header
+    lines.forEach(line => {
+      if (line.trim()) {
+        const parts = line.split(',');
+        if (parts.length >= 5) {
+          failed.push({
+            title: parts[0]?.replace(/"/g, '') || '',
+            url: parts[1]?.replace(/"/g, '') || '',
+            time_added: parts[2]?.replace(/"/g, '') || '',
+            tags: parts[3]?.replace(/"/g, '') || '',
+            status: parts[4]?.replace(/"/g, '') as 'unread' | 'archive'
+          });
+        }
+      }
+    });
+  }
+  
+  return { successful, failed };
+}
+
 export function writeMarkdownToVault(
   vaultRoot: string,
   item: PocketItem,
