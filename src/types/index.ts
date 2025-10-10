@@ -4,6 +4,7 @@ export interface PocketItem {
   time_added: string;
   tags: string;
   status: 'unread' | 'archive';
+  time_to_read?: string;
 }
 
 export interface ExtractedContent {
@@ -17,6 +18,7 @@ export interface ExtractedContent {
   image: string;
   wordCount: number;
   metaTags: any[];
+  finalUrl?: string;
 }
 
 export interface StructuralComparison {

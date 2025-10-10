@@ -167,3 +167,4 @@ annotations/
 *.csv
 .DS_Store
 Thumbs.db 
+progress.json

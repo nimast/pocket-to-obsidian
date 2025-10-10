@@ -7,8 +7,10 @@ import stringSimilarity from 'string-similarity';
 
 describe('Integration: Clipped markdown matches original Obsidian Web Clipper output', () => {
   const testUrl = 'https://whatisintelligence.antikythera.org/chapter-01/';
-  const expectedFile = path.resolve(
-    '/Users/nimast/dev/repos/obs-vault/Clippings/What is Intelligence?  Antikythera 1.md'
+  const expectedFile = path.join(
+    __dirname,
+    'fixtures',
+    'what-is-intelligence-antikythera-1.md'
   );
 
   it('should produce similar markdown output', async () => {

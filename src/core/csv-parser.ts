@@ -10,12 +10,18 @@ export function parsePocketCSV(filePath: string): Promise<PocketItem[]> {
       .on('data', (data) => {
         // Only process if URL is present
         if (data['url']) {
+          const timeTagsRaw = data['tags'] || '';
+          const firstTag = timeTagsRaw.split('|')[0].trim();
+          const TIME_TAG_REGEX = /^\d+\s*(minutes?|minute|hours?|hour)$/i;
+          const timeToRead = TIME_TAG_REGEX.test(firstTag) ? firstTag : undefined;
+
           results.push({
             title: data['title'] || '',
             url: data['url'],
             time_added: data['time_added'],
-            tags: data['tags'] || '',
+            tags: timeTagsRaw,
             status: data['status'] === 'unread' ? 'unread' : 'archive',
+            time_to_read: timeToRead,
           });
         }
       })

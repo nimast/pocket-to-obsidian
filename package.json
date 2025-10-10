@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "node dist/src/index.js",
     "dev": "ts-node src/index.ts",
     "process": "npm run dev -- process",
     "test": "jest",
@@ -49,12 +49,16 @@
     "csv-parser": "^3.0.0",
     "defuddle": "^0.6.4",
     "dompurify": "^3.0.9",
+    "nlcst-to-string": "^3.1.0",
     "highlight.js": "^11.11.1",
     "jsdom": "^24.0.0",
     "ora": "^7.0.1",
     "puppeteer": "^24.11.0",
+    "retext-english": "^5.0.0",
+    "retext-keywords": "^8.0.0",
     "turndown": "^7.2.0",
-    "turndown-plugin-gfm": "^1.0.2"
+    "turndown-plugin-gfm": "^1.0.2",
+    "unified": "^11.0.4"
   },
   "devDependencies": {
     "@types/jest": "^29.5.0",

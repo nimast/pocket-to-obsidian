@@ -1,22 +1,84 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { parsePocketCSV } from './core/csv-parser';
-import { ContentExtractor } from './core/content-extractor';
-import { generateMarkdown } from './core/markdown-generator';
-import { 
-  writeMarkdownToVault, 
-  createOutputFolder, 
-  writeResultsToCSV, 
-  ConversionResult,
-  findLatestRunFolder,
-  readPreviousResults
-} from './core/file-manager';
-import { PocketItem } from './types';
 import path from 'path';
 import chalk from 'chalk';
 
+import { parsePocketCSV } from './core/csv-parser';
+import type { ContentExtractor } from './core/content-extractor';
+import { processPocketItems } from './core/pocket-processor';
+import { PocketItem } from './types';
+import { loadProgress, saveProgress, ProgressState } from './utils/progress';
+
 const program = new Command();
+const PROJECT_ROOT = process.cwd();
+const PROGRESS_FILE = path.resolve(PROJECT_ROOT, 'progress.json');
+
+const activeExtractors = new Set<ContentExtractor>();
+let currentProgress: ProgressState | null = null;
+let isShuttingDown = false;
+
+async function closeAllExtractors(): Promise<void> {
+  if (activeExtractors.size === 0) {
+    return;
+  }
+
+  const extractors = Array.from(activeExtractors);
+  await Promise.allSettled(
+    extractors.map(async extractor => {
+      try {
+        await extractor.close();
+      } catch (err) {
+        console.error(chalk.red('Failed to close extractor:'), err);
+      } finally {
+        activeExtractors.delete(extractor);
+      }
+    })
+  );
+}
+
+async function saveStateAndExit(exitCode: number): Promise<void> {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
+
+  try {
+    if (currentProgress) {
+      saveProgress(PROGRESS_FILE, currentProgress);
+    }
+  } catch (err) {
+    console.error(chalk.red('Failed to save progress during shutdown:'), err);
+  }
+
+  await closeAllExtractors();
+  process.exit(exitCode);
+}
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error(chalk.red('Unhandled Promise Rejection at:'), promise, chalk.red('reason:'), reason);
+  if (currentProgress) {
+    saveProgress(PROGRESS_FILE, currentProgress);
+  }
+});
+
+process.on('uncaughtException', (error) => {
+  console.error(chalk.red('Uncaught Exception:'), error);
+  void saveStateAndExit(1);
+});
+
+process.on('SIGINT', () => {
+  console.log(chalk.yellow('\n\nReceived SIGINT. Saving progress and shutting down gracefully...'));
+  if (currentProgress) {
+    console.log(chalk.yellow('📊 Current progress snapshot:'), {
+      successCount: currentProgress.successCount,
+      failedAttempts: currentProgress.failedCount,
+      processedUrls: currentProgress.processedUrls.size,
+      failedUrlsTracked: currentProgress.failedUrls.size
+    });
+  }
+  void saveStateAndExit(0);
+});
 
 program
   .name('pocket-to-obsidian')
@@ -25,15 +87,14 @@ program
   .option('-v, --vault <path>', 'Path to your Obsidian vault', process.env.OBSIDIAN_VAULT_PATH)
   .option('-c, --csv <file>', 'Path to Pocket CSV export file (default: part_000000.csv in project folder)', 'part_000000.csv')
   .option('-l, --limit <number>', 'Limit number of items to process', parseInt)
-  .option('-o, --output <path>', 'Custom output directory')
   .option('--headless <boolean>', 'Run browser in headless mode', 'true')
-  .option('-r, --resume [folder]', 'Resume from previous run, optionally specify folder path')
+  .option('--workers <number>', 'Number of concurrent extraction workers', (value) => parseInt(value, 10), 5)
+  .option('--retry-failed', 'Retry URLs previously recorded as failed in progress.json')
   .parse();
 
 const options = program.opts();
 
-async function main() {
-  // Validate required options
+async function main(): Promise<void> {
   if (!options.vault) {
     console.error(chalk.red('Error: Obsidian vault path is required.'));
     console.error(chalk.yellow('Set OBSIDIAN_VAULT_PATH environment variable or use --vault option.'));
@@ -55,9 +116,6 @@ async function main() {
   if (options.limit) {
     console.log(chalk.white(`Limit: ${options.limit} items`));
   }
-  if (options.resume) {
-    console.log(chalk.yellow('Resume mode: enabled'));
-  }
   console.log('');
 
   try {
@@ -66,157 +124,77 @@ async function main() {
     console.log(chalk.green(`✓ Found ${items.length} items in CSV.`));
 
     let itemsToProcess: PocketItem[] = items;
-    let previousResults: ConversionResult[] = [];
-
-    if (options.resume) {
-      // Find the resume folder - either specified or latest
-      let resumeFolder: string | null = null;
-      
-      if (typeof options.resume === 'string' && options.resume !== 'true') {
-        // Specific folder provided
-        resumeFolder = path.resolve(options.resume);
-        console.log(chalk.yellow(`Resuming from specified folder: ${resumeFolder}`));
-      } else {
-        // Use latest folder
-        resumeFolder = findLatestRunFolder();
-        if (resumeFolder) {
-          console.log(chalk.yellow(`Resuming from latest run: ${resumeFolder}`));
-        }
-      }
-
-      if (resumeFolder) {
-        const { successful, failed } = readPreviousResults(resumeFolder);
-        
-        // Skip items that were successfully processed
-        const skippedCount = successful.size;
-        console.log(chalk.gray(`Skipping ${skippedCount} previously successful conversions`));
-        
-        // Only process failed items and new items
-        itemsToProcess = items.filter(item => !successful.has(item.url));
-        
-        // Add previously failed items to results (so they get retried)
-        previousResults = failed.map(item => ({
-          item,
-          success: false,
-          error: 'Retrying from previous run'
-        }));
-        
-        console.log(chalk.yellow(`Will retry ${failed.length} failed conversions`));
-        console.log(chalk.white(`Will process ${itemsToProcess.length - failed.length} new items`));
-      } else {
-        console.log(chalk.gray('No previous run found, processing all items'));
-      }
-    }
-
-    // Apply limit if specified
     if (options.limit) {
       itemsToProcess = itemsToProcess.slice(0, options.limit);
     }
     console.log(chalk.white(`Processing ${itemsToProcess.length} items...`));
 
-    // Create timestamped output folder
-    const outputDir = options.output || createOutputFolder();
-    console.log(chalk.white(`Output folder: ${outputDir}`));
-
-    const extractor = new ContentExtractor({
-      headless: options.headless === 'true'
+    const progress = loadProgress(PROGRESS_FILE);
+    currentProgress = progress;
+    console.log(chalk.gray('📊 Loaded progress:'), {
+      successCount: progress.successCount,
+      failedCount: progress.failedCount,
+      processedCount: progress.processedUrls.size,
+      failedTracked: progress.failedUrls.size
     });
-    const results: ConversionResult[] = [...previousResults];
-    
-    try {
-      for (let i = 0; i < itemsToProcess.length; i++) {
-        const item = itemsToProcess[i];
-        if (!item.url) continue;
-        
-        const progress = `[${i + 1}/${itemsToProcess.length}]`;
-        
-        // Check if this is a retry from previous run
-        const isRetry = results.some(r => r.item.url === item.url);
-        if (isRetry) {
-          console.log(chalk.blue(`${progress} Retrying: ${item.title}`));
-        } else {
-          console.log(chalk.blue(`${progress} Clipping: ${item.title}`));
-        }
-        console.log(chalk.gray(`   URL: ${item.url}`));
-        
-        try {
-          const content = await extractor.extractContent(item.url);
-          const markdown = generateMarkdown(item, content);
-          const outputPath = writeMarkdownToVault(vaultPath, item, markdown);
-          
-          // Update existing result or add new one
-          const existingIndex = results.findIndex(r => r.item.url === item.url);
-          if (existingIndex >= 0) {
-            results[existingIndex] = {
-              item,
-              success: true,
-              outputPath
-            };
-          } else {
-            results.push({
-              item,
-              success: true,
-              outputPath
-            });
-          }
-          
-          console.log(chalk.green(`   ✓ Success: ${path.basename(outputPath)}`));
-        } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          
-          // Update existing result or add new one
-          const existingIndex = results.findIndex(r => r.item.url === item.url);
-          if (existingIndex >= 0) {
-            results[existingIndex] = {
-              item,
-              success: false,
-              error: errorMessage
-            };
-          } else {
-            results.push({
-              item,
-              success: false,
-              error: errorMessage
-            });
-          }
-          
-          console.log(chalk.red(`   ✗ Failed: ${errorMessage}`));
-        }
-        console.log('');
+
+    const alreadyProcessed = itemsToProcess.filter(item => item.url && progress.processedUrls.has(item.url));
+    const previouslyFailed = itemsToProcess.filter(item => item.url && progress.failedUrls.has(item.url));
+
+    if (options.retryFailed) {
+      if (alreadyProcessed.length > 0) {
+        console.log(chalk.gray(`Ignoring ${alreadyProcessed.length} items already marked successful in progress tracking`));
       }
-      
-      // Write results to CSV files
-      writeResultsToCSV(results, outputDir);
-      
-      const successful = results.filter(r => r.success).length;
-      const failed = results.filter(r => !r.success).length;
-      
-      console.log(chalk.blue('Summary'));
-      console.log(chalk.blue('======='));
-      console.log(chalk.green(`✓ Successful: ${successful}`));
-      console.log(chalk.red(`✗ Failed: ${failed}`));
-      console.log(chalk.white(`📁 Results saved to: ${outputDir}`));
-      
-      if (failed > 0) {
-        console.log(chalk.yellow('\nFailed items:'));
-        results.filter(r => !r.success).forEach(r => {
-          console.log(chalk.yellow(`  - ${r.item.title}: ${r.error}`));
-        });
-        
-        if (options.resume) {
-          console.log(chalk.blue(`\n💡 Tip: Run again with --resume to retry the ${failed} failed conversions`));
-        }
+      if (previouslyFailed.length === 0) {
+        console.log(chalk.yellow('No failed URLs recorded in progress.json to retry.'));
+        saveProgress(PROGRESS_FILE, progress);
+        return;
       }
-      
-    } finally {
-      await extractor.close();
+      console.log(chalk.white(`Retrying ${previouslyFailed.length} previously failed item(s)`));
+      itemsToProcess = previouslyFailed;
+    } else {
+      if (alreadyProcessed.length > 0) {
+        console.log(chalk.gray(`Skipping ${alreadyProcessed.length} items already processed in progress tracking`));
+      }
+      if (previouslyFailed.length > 0) {
+        console.log(chalk.gray(`Skipping ${previouslyFailed.length} items previously failed. Run with --retry-failed to retry them.`));
+      }
+      itemsToProcess = itemsToProcess.filter(item => item.url && !progress.processedUrls.has(item.url) && !progress.failedUrls.has(item.url));
+      if (itemsToProcess.length === 0) {
+        console.log(chalk.green('All items already processed or awaiting retry!'));
+        saveProgress(PROGRESS_FILE, progress);
+        return;
+      }
     }
+
+    const requestedWorkers = typeof options.workers === 'number' && Number.isFinite(options.workers)
+      ? options.workers
+      : 1;
+    const workerCount = Math.max(1, requestedWorkers);
+    const headlessMode = options.headless !== 'false';
+
+    await processPocketItems({
+      items: itemsToProcess,
+      progress,
+      vaultPath,
+      workerCount,
+      headless: headlessMode,
+      activeExtractors,
+      saveProgressSnapshot: (state) => saveProgress(PROGRESS_FILE, state),
+      progressFilePath: PROGRESS_FILE
+    });
   } catch (error) {
     console.error(chalk.red('Fatal error:'), error);
+    if (currentProgress) {
+      saveProgress(PROGRESS_FILE, currentProgress);
+    }
     process.exit(1);
   }
 }
 
 if (require.main === module) {
-  main().catch(console.error);
-} 
+  main().catch(err => {
+    console.error(chalk.red('Unhandled error in main:'), err);
+    process.exit(1);
+  });
+}
