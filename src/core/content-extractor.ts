@@ -297,8 +297,7 @@ export class ContentExtractor {
             const message = err?.message || String(err);
             // Ignore protocol errors that surface when the page is already shutting down
             if (!message.includes('Fetch.disable')) {
-              const msg = err instanceof Error ? err.message : String(err);
-              this.logWarn(context, `Error disabling request interception: ${msg}`);
+              this.logWarn(context, `Error disabling request interception: ${message}`);
             }
           }
         }
